@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mom's Health Monitor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script type="module" id="firebase-init">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getDatabase, ref, onValue, push, remove } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBSk5taHAF5l2aQ_ZG5wVKG47TAwOQyF4I",
+      authDomain: "moms-health-tracker-34904.firebaseapp.com",
+      databaseURL: "https://moms-health-tracker-34904-default-rtdb.firebaseio.com",
+      projectId: "moms-health-tracker-34904",
+      storageBucket: "moms-health-tracker-34904.firebasestorage.app",
+      messagingSenderId: "158716767578",
+      appId: "1:158716767578:web:272fa9cc9e0afbb9fe5763"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    window._firebaseDB = db;
+    window._firebaseRef = ref;
+    window._firebaseOnValue = onValue;
+    window._firebasePush = push;
+    window._firebaseRemove = remove;
+    window._firebaseReady = true;
+    window.dispatchEvent(new Event("firebaseReady"));
+  </script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f8fafc; font-family: Georgia, serif; }
+    input[type=number]::-webkit-inner-spin-button { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    const { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = Recharts;
+
+    const RANGES = {
+      glucose:   { low: 70,  highNormal: 140, high: 200  },
+      systolic:  { low: 90,  highNormal: 130, high: 160  },
+      diastolic: { low: 60,  highNormal: 85,  high: 100  },
+      pulse:     { low: 50,  highNormal: 100, high: 120  },
+      weight:    { low: 0,   highNormal: 999, high: 9999 },
+    };
+
+    function getStatus(type, val) {
+      const r = RANGES[type];
+      if (val < r.low || val >= r.high) return "danger";
+      if (val >= r.highNormal) return "warning";
+      return "normal";
+    }
+
+    const STATUS_COLORS = { normal: "#22c55e", warning: "#f59e0b", danger: "#ef4444" };
+    const STATUS_BG     = { normal: "#dcfce7", warning: "#fef9c3", danger: "#fee2e2" };
+    const STATUS_LABELS = { normal: "Normal",  warning: "Elevated", danger: "High / Low" };
+
+    function StatusBadge({ type, value }) {
+      const s = getStatus(type, value);
+      return (
+        <span style={{ background: STATUS_BG[s], color: STATUS_COLORS[s],
+          padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 700,
+          border: `1px solid ${STATUS_COLORS[s]}33` }}>
+          {STATUS_LABELS[s]}
+        </span>
+      );
+    }
+
+    function MetricCard({ label, value, unit, type, icon }) {
+      if (!value) return null;
+      const s = getStatus(type, Number(value));
+      return (
+        <div style={{ background: "#fff", borderRadius: 16, padding: "16px 20px",
+          border: `2px solid ${STATUS_COLORS[s]}44`,
+          boxShadow: `0 2px 12px ${STATUS_COLORS[s]}22`,
+          display: "flex", flexDirection: "column", gap: 6, minWidth: 130 }}>
+          <div style={{ fontSize: 20 }}>{icon}</div>
+          <div style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>{label}</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "#1e293b" }}>
+            {value}<span style={{ fontSize: 13, color: "#94a3b8", marginLeft: 3 }}>{unit}</span>
+          </div>
+          <StatusBadge type={type} value={Number(value)} />
+        </div>
+      );
+    }
+
+    const defaultForm = { date: "", time: "", glucose: "", systolic: "", diastolic: "", pulse: "", weight: "", notes: "" };
+
+    function App() {
+      const [readings, setReadings]   = useState([]);
+      const [form, setForm]           = useState(defaultForm);
+      const [activeTab, setActiveTab] = useState("log");
+      const [saving, setSaving]       = useState(false);
+      const [fbReady, setFbReady]     = useState(false);
+      const [error, setError]         = useState("");
+      const [successMsg, setSuccess]  = useState("");
+
+      useEffect(() => {
+        const init = () => {
+          setFbReady(true);
+          const db = window._firebaseDB;
+          const dbRef = window._firebaseRef(db, "readings");
+          window._firebaseOnValue(dbRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+              const list = Object.entries(data).map(([id, val]) => ({ id, ...val }));
+              list.sort((a, b) => new Date(`${b.date}T${b.time}`) - new Date(`${a.date}T${a.time}`));
+              setReadings(list);
+            } else {
+              setReadings([]);
+            }
+          });
+        };
+        if (window._firebaseReady) init();
+        else window.addEventListener("firebaseReady", init);
+        return () => window.removeEventListener("firebaseReady", init);
+      }, []);
+
+      async function saveReading() {
+        if (!form.date || !form.time) { setError("Date and time are required."); return; }
+        if (!form.glucose && !form.systolic && !form.diastolic && !form.pulse && !form.weight) {
+          setError("Enter at least one measurement."); return;
+        }
+        setError(""); setSaving(true);
+        try {
+          const db = window._firebaseDB;
+          const dbRef = window._firebaseRef(db, "readings");
+          await window._firebasePush(dbRef, { ...form, timestamp: Date.now() });
+          setForm(defaultForm);
+          setSuccess("Reading saved! ✓");
+          setTimeout(() => setSuccess(""), 3000);
+        } catch(e) {
+          setError("Failed to save. Check your connection.");
+        }
+        setSaving(false);
+      }
+
+      async function deleteReading(id) {
+        const db = window._firebaseDB;
+        const dbRef = window._firebaseRef(db, `readings/${id}`);
+        await window._firebaseRemove(dbRef);
+      }
+
+      function exportCSV() {
+        const rows = [["Date","Time","Glucose (mg/dL)","Systolic","Diastolic","Pulse (bpm)","Weight (lbs)","Notes"]];
+        readings.forEach(r => rows.push([r.date,r.time,r.glucose,r.systolic,r.diastolic,r.pulse,r.weight,r.notes]));
+        const csv = rows.map(r => r.join(",")).join("\n");
+        const a = document.createElement("a");
+        a.href = "data:text/csv," + encodeURIComponent(csv);
+        a.download = "moms-health-data.csv";
+        a.click();
+      }
+
+      function setNow() {
+        const now = new Date();
+        setForm(f => ({ ...f, date: now.toISOString().split("T")[0], time: now.toTimeString().slice(0,5) }));
+      }
+
+      const chartData = [...readings].reverse().slice(-30).map(r => ({
+        label: `${r.date} ${r.time}`,
+        glucose:   r.glucose   ? Number(r.glucose)   : undefined,
+        systolic:  r.systolic  ? Number(r.systolic)  : undefined,
+        diastolic: r.diastolic ? Number(r.diastolic) : undefined,
+        pulse:     r.pulse     ? Number(r.pulse)     : undefined,
+        weight:    r.weight    ? Number(r.weight)    : undefined,
+      }));
+
+      const latest = readings[0];
+
+      const S = {
+        header: { background: "linear-gradient(135deg,#1e3a5f,#2d6a9f)", color: "#fff", padding: "28px 24px 20px", textAlign: "center" },
+        tabs:   { display: "flex", background: "#1e3a5f", borderTop: "1px solid #ffffff22" },
+        tab: a => ({ flex:1, padding:"12px 0", textAlign:"center", cursor:"pointer",
+          color: a?"#fff":"#94c2e8", fontWeight: a?700:400, fontSize:13,
+          borderBottom: a?"3px solid #60a5fa":"3px solid transparent", transition:"all 0.2s" }),
+        body:  { padding:"20px 16px", maxWidth:600, margin:"0 auto" },
+        label: { fontSize:12, fontWeight:700, color:"#475569", marginBottom:4, display:"block" },
+        input: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid #e2e8f0", fontSize:15, outline:"none", background:"#fff" },
+        btn:   { background:"linear-gradient(135deg,#1e3a5f,#2d6a9f)", color:"#fff", border:"none", borderRadius:12, padding:"14px 28px", fontSize:15, fontWeight:700, cursor:"pointer", width:"100%" },
+        card:  { background:"#fff", borderRadius:16, padding:18, marginBottom:12, boxShadow:"0 1px 8px #0000000d" },
+        sec:   { fontSize:13, fontWeight:800, color:"#64748b", marginBottom:12, textTransform:"uppercase", letterSpacing:1 },
+      };
+
+      if (!fbReady) return (
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", flexDirection:"column", gap:16 }}>
+          <div style={{ fontSize:36 }}>🏥</div>
+          <div style={{ color:"#64748b" }}>Connecting to database...</div>
+        </div>
+      );
+
+      return (
+        <div style={{ fontFamily:"Georgia,serif", background:"#f8fafc", minHeight:"100vh", paddingBottom:40 }}>
+          <div style={S.header}>
+            <div style={{ fontSize:36, marginBottom:6 }}>🏥</div>
+            <div style={{ fontSize:26, fontWeight:800, letterSpacing:-0.5 }}>Mom's Health Monitor</div>
+            <div style={{ fontSize:13, opacity:0.75, marginTop:4 }}>🔴 Live • Shared with family</div>
+          </div>
+
+          <div style={S.tabs}>
+            {[["log","📋 Log"],["history","📊 History"],["chart","📈 Trends"]].map(([k,l]) => (
+              <div key={k} style={S.tab(activeTab===k)} onClick={()=>setActiveTab(k)}>{l}</div>
+            ))}
+          </div>
+
+          <div style={S.body}>
+
+            {/* LOG */}
+            {activeTab==="log" && (
+              <div>
+                {latest && (
+                  <div style={{ marginBottom:20 }}>
+                    <div style={S.sec}>Latest Reading</div>
+                    <div style={{ fontSize:12, color:"#94a3b8", marginBottom:10 }}>📅 {latest.date} at {latest.time}</div>
+                    <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                      {latest.glucose   && <MetricCard label="Blood Glucose" value={latest.glucose}   unit="mg/dL" type="glucose"   icon="🩸" />}
+                      {latest.systolic  && <MetricCard label="Systolic"      value={latest.systolic}  unit="mmHg"  type="systolic"  icon="❤️" />}
+                      {latest.diastolic && <MetricCard label="Diastolic"     value={latest.diastolic} unit="mmHg"  type="diastolic" icon="💙" />}
+                      {latest.pulse     && <MetricCard label="Pulse"         value={latest.pulse}     unit="bpm"   type="pulse"     icon="💓" />}
+                      {latest.weight    && <MetricCard label="Weight"        value={latest.weight}    unit="lbs"   type="weight"    icon="⚖️" />}
+                    </div>
+                    {latest.notes && <div style={{ marginTop:10, fontSize:13, color:"#64748b", fontStyle:"italic" }}>📝 {latest.notes}</div>}
+                  </div>
+                )}
+
+                <div style={S.card}>
+                  <div style={S.sec}>Add New Reading</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:12 }}>
+                    <div>
+                      <label style={S.label}>Date *</label>
+                      <input style={S.input} type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} />
+                    </div>
+                    <div>
+                      <label style={S.label}>Time *</label>
+                      <div style={{ display:"flex", gap:6 }}>
+                        <input style={{...S.input,flex:1}} type="time" value={form.time} onChange={e=>setForm(f=>({...f,time:e.target.value}))} />
+                        <button onClick={setNow} style={{ background:"#e0f2fe", border:"none", borderRadius:8, padding:"0 10px", cursor:"pointer", fontSize:13, color:"#0369a1", fontWeight:600 }}>Now</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ marginBottom:10 }}>
+                    <label style={S.label}>🩸 Blood Glucose (mg/dL) — Normal: 70–140</label>
+                    <input style={S.input} type="number" placeholder="e.g. 95" value={form.glucose} onChange={e=>setForm(f=>({...f,glucose:e.target.value}))} />
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:10 }}>
+                    <div>
+                      <label style={S.label}>❤️ Systolic</label>
+                      <input style={S.input} type="number" placeholder="e.g. 120" value={form.systolic} onChange={e=>setForm(f=>({...f,systolic:e.target.value}))} />
+                    </div>
+                    <div>
+                      <label style={S.label}>💙 Diastolic</label>
+                      <input style={S.input} type="number" placeholder="e.g. 80" value={form.diastolic} onChange={e=>setForm(f=>({...f,diastolic:e.target.value}))} />
+                    </div>
+                    <div>
+                      <label style={S.label}>💓 Pulse (bpm)</label>
+                      <input style={S.input} type="number" placeholder="e.g. 72" value={form.pulse} onChange={e=>setForm(f=>({...f,pulse:e.target.value}))} />
+                    </div>
+                  </div>
+                  <div style={{ marginBottom:10 }}>
+                    <label style={S.label}>⚖️ Weight (lbs)</label>
+                    <input style={S.input} type="number" placeholder="e.g. 145" value={form.weight} onChange={e=>setForm(f=>({...f,weight:e.target.value}))} />
+                  </div>
+                  <div style={{ marginBottom:14 }}>
+                    <label style={S.label}>📝 Notes (optional)</label>
+                    <input style={S.input} type="text" placeholder="e.g. After breakfast, felt dizzy..." value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} />
+                  </div>
+                  {error && <div style={{ color:"#ef4444", fontSize:13, marginBottom:10 }}>⚠️ {error}</div>}
+                  {successMsg && <div style={{ color:"#22c55e", fontSize:13, marginBottom:10, fontWeight:700 }}>{successMsg}</div>}
+                  <button style={S.btn} onClick={saveReading} disabled={saving}>
+                    {saving ? "Saving..." : "💾 Save Reading"}
+                  </button>
+                </div>
+
+                <div style={{ background:"#f0fdf4", borderRadius:12, padding:14, fontSize:12, color:"#15803d" }}>
+                  🔄 <strong>Live sync enabled!</strong> All family members see readings instantly in real time via Firebase.
+                </div>
+              </div>
+            )}
+
+            {/* HISTORY */}
+            {activeTab==="history" && (
+              <div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                  <div style={S.sec}>{readings.length} Readings</div>
+                  {readings.length > 0 && (
+                    <button onClick={exportCSV} style={{ background:"#f0fdf4", border:"1.5px solid #22c55e", color:"#15803d", borderRadius:8, padding:"6px 14px", fontSize:12, fontWeight:700, cursor:"pointer" }}>
+                      ⬇️ Export CSV
+                    </button>
+                  )}
+                </div>
+                {readings.length === 0 && (
+                  <div style={{ textAlign:"center", color:"#94a3b8", padding:40 }}>No readings yet. Add the first one in the Log tab!</div>
+                )}
+                {readings.map(r => (
+                  <div key={r.id} style={S.card}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                      <div>
+                        <div style={{ fontWeight:700, color:"#1e293b", fontSize:14 }}>📅 {r.date} at {r.time}</div>
+                        <div style={{ display:"flex", flexWrap:"wrap", gap:12, marginTop:10 }}>
+                          {r.glucose   && <div><span style={{ fontSize:12, color:"#64748b" }}>🩸 </span><strong>{r.glucose} mg/dL</strong> <StatusBadge type="glucose"   value={Number(r.glucose)}   /></div>}
+                          {r.systolic  && <div><span style={{ fontSize:12, color:"#64748b" }}>BP </span><strong>{r.systolic}/{r.diastolic} mmHg</strong> <StatusBadge type="systolic" value={Number(r.systolic)}  /></div>}
+                          {r.pulse     && <div><span style={{ fontSize:12, color:"#64748b" }}>💓 </span><strong>{r.pulse} bpm</strong> <StatusBadge type="pulse"     value={Number(r.pulse)}     /></div>}
+                          {r.weight    && <div><span style={{ fontSize:12, color:"#64748b" }}>⚖️ </span><strong>{r.weight} lbs</strong></div>}
+                        </div>
+                        {r.notes && <div style={{ fontSize:12, color:"#94a3b8", marginTop:6, fontStyle:"italic" }}>📝 {r.notes}</div>}
+                      </div>
+                      <button onClick={()=>deleteReading(r.id)} style={{ background:"none", border:"none", color:"#ef4444", cursor:"pointer", fontSize:18 }}>🗑</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* CHART */}
+            {activeTab==="chart" && (
+              <div>
+                {chartData.length < 2 && (
+                  <div style={{ textAlign:"center", color:"#94a3b8", padding:40 }}>Add at least 2 readings to see trend charts.</div>
+                )}
+                {chartData.length >= 2 && (<>
+                  <div style={S.card}>
+                    <div style={S.sec}>🩸 Blood Glucose (mg/dL)</div>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart data={chartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="label" hide />
+                        <YAxis domain={[40,300]} width={40} />
+                        <Tooltip formatter={v=>[`${v} mg/dL`,"Glucose"]} />
+                        <Line type="monotone" dataKey="glucose" stroke="#ef4444" strokeWidth={2} dot={{r:3}} connectNulls />
+                      </LineChart>
+                    </ResponsiveContainer>
+                    <div style={{ display:"flex", gap:16, fontSize:11, color:"#64748b", marginTop:6 }}>
+                      <span>🟢 70–140</span><span>🟡 140–200</span><span>🔴 200+</span>
+                    </div>
+                  </div>
+                  <div style={S.card}>
+                    <div style={S.sec}>❤️ Blood Pressure (mmHg)</div>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart data={chartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="label" hide />
+                        <YAxis domain={[40,200]} width={40} />
+                        <Tooltip /><Legend />
+                        <Line type="monotone" dataKey="systolic"  stroke="#dc2626" strokeWidth={2} dot={{r:3}} name="Systolic"  connectNulls />
+                        <Line type="monotone" dataKey="diastolic" stroke="#2563eb" strokeWidth={2} dot={{r:3}} name="Diastolic" connectNulls />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div style={S.card}>
+                    <div style={S.sec}>💓 Pulse (bpm)</div>
+                    <ResponsiveContainer width="100%" height={180}>
+                      <LineChart data={chartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="label" hide />
+                        <YAxis domain={[30,160]} width={40} />
+                        <Tooltip formatter={v=>[`${v} bpm`,"Pulse"]} />
+                        <Line type="monotone" dataKey="pulse" stroke="#a855f7" strokeWidth={2} dot={{r:3}} connectNulls />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div style={S.card}>
+                    <div style={S.sec}>⚖️ Weight (lbs)</div>
+                    <ResponsiveContainer width="100%" height={180}>
+                      <LineChart data={chartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="label" hide />
+                        <YAxis width={45} />
+                        <Tooltip formatter={v=>[`${v} lbs`,"Weight"]} />
+                        <Line type="monotone" dataKey="weight" stroke="#0ea5e9" strokeWidth={2} dot={{r:3}} connectNulls />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>)}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
